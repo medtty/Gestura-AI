@@ -76,5 +76,11 @@ async def api_predict(file: UploadFile = File(...)):
     return predict(image)
 
 if __name__ == "__main__":
-    # For Hugging Face Spaces, we need to use specific settings
-    uvicorn.run(fastapi_app, host="0.0.0.0", port=7860, root_path="")
+    # Modified for Hugging Face Spaces environment
+    uvicorn.run(
+        fastapi_app, 
+        host="0.0.0.0", 
+        port=7860,
+        root_path="",
+        forwarded_allow_ips="*"
+    )
