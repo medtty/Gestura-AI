@@ -28,16 +28,23 @@ def preprocess_image(image):
 
 def predict(image):
     try:
+        print(f"Original image mode: {image.mode}, size: {image.size}") # Debug: Print original image info
         processed_image = preprocess_image(image)
+        print(f"Processed image shape: {processed_image.shape}, dtype: {processed_image.dtype}") # Debug: Print processed image info
+
         interpreter.set_tensor(input_details[0]['index'], processed_image)
         interpreter.invoke()
         output_data = interpreter.get_tensor(output_details[0]['index'])
         prediction = output_data[0]
         
+        print(f"Raw prediction output: {prediction}") # Debug: Print raw model output
+
         predicted_class_idx = int(np.argmax(prediction))
         confidence = float(prediction[predicted_class_idx])
         predicted_class = index_to_class.get(predicted_class_idx, f"unknown_{predicted_class_idx}")
         
+        print(f"Predicted class index: {predicted_class_idx}, Confidence: {confidence}, Class: {predicted_class}") # Debug: Print final prediction
+
         return {
             "class": predicted_class,
             "confidence": confidence,
@@ -47,6 +54,7 @@ def predict(image):
             }
         }
     except Exception as e:
+        print(f"Error during prediction: {e}") # Debug: Print any exceptions
         return {"error": str(e)}
 
 # Gradio Interface
