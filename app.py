@@ -4,16 +4,12 @@ import numpy as np
 import json
 from PIL import Image
 from fastapi import FastAPI, UploadFile, File, WebSocket, Request, Response
-from fastapi.responses import StreamingResponse
 import uvicorn
 import cv2
 import mediapipe as mp
 import io
-import base64
-import asyncio
 import time
-from typing import List, Dict, Any
-from pydantic import BaseModel
+from typing import Dict
 
 # Initialize MediaPipe Hands
 mp_hands = mp.solutions.hands
@@ -42,19 +38,6 @@ index_to_class = {int(k): v for k, v in class_indices.items()}
 MODEL_INPUT_SIZE = (224, 224)
 DETECTION_FREQUENCY = 5  # Process every Nth frame for performance
 CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to report a gesture
-
-# Data models for API
-class GestureResponse(BaseModel):
-    class_name: str
-    confidence: float
-    timestamp: float
-    all_predictions: Dict[str, float] = None
-
-class StreamRequest(BaseModel):
-    stream_id: str = None
-    width: int = 640
-    height: int = 480
-    fps: int = 15
 
 # Cache to store most recent detection results
 detection_cache = {}
@@ -196,45 +179,33 @@ def predict(image_pil):
         traceback.print_exc()
         return {"error": str(e)}
 
-# Define the Gradio interface
+# Define the Gradio interface - simplified without webcam
 with gradio_app:
     gr.Markdown("# Hand Gesture Recognition")
-    with gr.Tabs():
-        with gr.TabItem("Image Upload"):
-            with gr.Row():
-                input_image = gr.Image(type="pil", label="Upload Image")
-                output_json = gr.JSON(label="Prediction Results")
-            submit = gr.Button("Predict")
-            submit.click(
-                fn=predict,
-                inputs=input_image,
-                outputs=output_json
-            )
-            gr.Examples(
-                examples=[["examples/two_up.jpg"], ["examples/stop.jpg"]],
-                inputs=input_image
-            )
-        
-        with gr.TabItem("Live Demo"):
-            gr.Markdown("""
-            ## Live Demo
-            Try the live demo using your webcam!
-            - Please allow camera access when prompted
-            - Hold your hand gesture in front of the camera
-            """)
-            camera_input = gr.Image(source="webcam", streaming=True, label="Camera Input")
-            live_output = gr.JSON(label="Live Detection Results")
-            
-            def process_camera_input(img):
-                if img is None:
-                    return {"message": "No image received"}
-                return predict(img)
-            
-            camera_input.change(
-                fn=process_camera_input,
-                inputs=camera_input,
-                outputs=live_output
-            )
+    with gr.Row():
+        input_image = gr.Image(type="pil", label="Upload Image")
+        output_json = gr.JSON(label="Prediction Results")
+    submit = gr.Button("Predict")
+    submit.click(
+        fn=predict,
+        inputs=input_image,
+        outputs=output_json
+    )
+    gr.Examples(
+        examples=[["examples/two_up.jpg"], ["examples/call.jpg"], ["examples/stop.jpg"]],
+        inputs=input_image
+    )
+    
+    # Add information about API endpoints for Android integration
+    gr.Markdown("""
+    ## API Endpoints for Android Integration
+    
+    - **Image Upload**: `POST /api/predict` with image file
+    - **Video Frame**: `POST /api/video/frame` with frame data and X-Stream-ID header
+    - **WebSocket Stream**: Connect to `/api/stream` for real-time processing
+    - **Available Gestures**: `GET /api/gestures` returns all gesture classes
+    - **Health Check**: `GET /health` checks server status
+    """)
 
 # Mount Gradio app to FastAPI
 fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
@@ -352,7 +323,6 @@ def health_check():
     """Simple health check endpoint"""
     return {"status": "healthy", "timestamp": time.time()}
 
-# Documentation for Android integration
 @fastapi_app.get("/")
 async def root():
     return {
