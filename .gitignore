@@ -1,3 +1,5 @@
 trainig.py
 *.bak
 .DS_Store
+test_api.py
+venv/

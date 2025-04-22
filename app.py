@@ -21,7 +21,6 @@ mp_drawing = mp.solutions.drawing_utils
 
 # Create both Gradio and FastAPI apps
 gradio_app = gr.Blocks()
-fastapi_app = FastAPI()
 
 # Load model and class indices
 interpreter = tf.lite.Interpreter(model_path="model/model.tflite")
@@ -208,9 +207,123 @@ with gradio_app:
     """)
 
 # Mount Gradio app to FastAPI
-fastapi_app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
+fastapi_app = FastAPI()
 
-# API endpoint for single image prediction
+# Load model and class indices
+interpreter = tf.lite.Interpreter(model_path="model/model.tflite")
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+with open('model/class_indices.json') as f:
+    class_indices = json.load(f)
+
+index_to_class = {int(k): v for k, v in class_indices.items()}
+
+# Model and processing parameters
+MODEL_INPUT_SIZE = (224, 224)
+DETECTION_FREQUENCY = 5  # Process every Nth frame for performance
+CONFIDENCE_THRESHOLD = 0.5  # Minimum confidence to report a gesture
+
+# Cache to store most recent detection results
+detection_cache = {}
+
+# Preprocess function now expects a PIL Image (already cropped)
+def preprocess_image(image):
+    # Ensure image is RGB before resizing and converting
+    if image.mode != 'RGB':
+        image = image.convert('RGB')
+    image = image.resize(MODEL_INPUT_SIZE)
+    image_array = np.array(image) / 255.0
+    return np.expand_dims(image_array, axis=0).astype(np.float32)
+
+def detect_and_crop_hand(image_rgb):
+    """Detect hand in the image and return cropped hand region if found"""
+    h, w = image_rgb.shape[:2]
+    results = hands_static.process(image_rgb)
+    
+    if not results.multi_hand_landmarks:
+        return None, "No hand detected"
+    
+    # Get the first hand detected
+    hand_landmarks = results.multi_hand_landmarks[0]
+    
+    # Calculate bounding box from landmarks
+    x_min, y_min = w, h
+    x_max, y_max = 0, 0
+    for landmark in hand_landmarks.landmark:
+        x, y = int(landmark.x * w), int(landmark.y * h)
+        if x < x_min: x_min = x
+        if y < y_min: y_min = y
+        if x > x_max: x_max = x
+        if y > y_max: y_max = y
+    
+    # Add padding to the bounding box
+    padding = 30
+    x_min = max(0, x_min - padding)
+    y_min = max(0, y_min - padding)
+    x_max = min(w, x_max + padding)
+    y_max = min(h, y_max + padding)
+    
+    # Check for valid dimensions
+    if x_min >= x_max or y_min >= y_max:
+        return None, "Invalid bounding box"
+    
+    # Crop the hand region
+    cropped_image = image_rgb[y_min:y_max, x_min:x_max]
+    
+    if cropped_image.size == 0:
+        return None, "Empty cropped image"
+    
+    return cropped_image, None
+
+def process_frame_for_gesture(frame):
+    """Process a single frame for hand gesture recognition"""
+    try:
+        # Convert to RGB for MediaPipe
+        if frame.shape[2] == 4:  # RGBA
+            frame = cv2.cvtColor(frame, cv2.COLOR_RGBA2RGB)
+        elif frame.shape[2] == 3 and frame.dtype == np.uint8:
+            # Assuming BGR from OpenCV
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        
+        # Detect and crop hand
+        cropped_hand, error = detect_and_crop_hand(frame)
+        if error:
+            return {"error": error}
+        
+        # Convert cropped NumPy array to PIL Image
+        cropped_pil = Image.fromarray(cropped_hand)
+        
+        # Preprocess and predict
+        processed_image = preprocess_image(cropped_pil)
+        interpreter.set_tensor(input_details[0]['index'], processed_image)
+        interpreter.invoke()
+        output_data = interpreter.get_tensor(output_details[0]['index'])
+        prediction = output_data[0]
+        
+        # Get the prediction result
+        predicted_class_idx = int(np.argmax(prediction))
+        confidence = float(prediction[predicted_class_idx])
+        predicted_class = index_to_class.get(predicted_class_idx, f"unknown_{predicted_class_idx}")
+        
+        # Return prediction info
+        return {
+            "class": predicted_class,
+            "confidence": confidence,
+            "timestamp": time.time(),
+            "all_predictions": {
+                index_to_class.get(i, f"class_{i}"): float(prediction[i])
+                for i in range(len(prediction))
+            }
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"error": str(e)}
+
+# --- Define ALL FastAPI Endpoints BEFORE Mounting Gradio ---
+
 @fastapi_app.post("/api/predict")
 async def api_predict(file: UploadFile = File(...)):
     try:
@@ -224,13 +337,13 @@ async def api_predict(file: UploadFile = File(...)):
         # Convert BGR (OpenCV default) to RGB for PIL
         img_rgb = cv2.cvtColor(img_cv, cv2.COLOR_BGR2RGB)
         image_pil = Image.fromarray(img_rgb)
-        return predict(image_pil)
+        # Use the existing predict function (which handles cropping and prediction)
+        return predict(image_pil) # Assuming predict is defined above
     except Exception as e:
         import traceback
         traceback.print_exc()
         return {"error": f"Failed to process image: {e}"}
 
-# WebSocket endpoint for video stream processing
 @fastapi_app.websocket("/api/stream")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
@@ -263,7 +376,7 @@ async def websocket_endpoint(websocket: WebSocket):
             # Process every N frames for performance
             if frame_count % DETECTION_FREQUENCY == 0 or (current_time - last_detection_time) >= processing_interval:
                 # Process the frame for gesture recognition
-                result = process_frame_for_gesture(frame)
+                result = process_frame_for_gesture(frame) # Assuming process_frame_for_gesture is defined above
                 
                 if "error" not in result:
                     # Cache the result
@@ -279,7 +392,7 @@ async def websocket_endpoint(websocket: WebSocket):
     finally:
         print(f"WebSocket connection closed")
 
-# REST API endpoints for mobile integration
+
 @fastapi_app.post("/api/video/frame")
 async def process_video_frame(request: Request):
     """Process a single video frame sent from Android app"""
@@ -298,7 +411,7 @@ async def process_video_frame(request: Request):
             return {"error": "Could not decode image data"}
         
         # Process the frame
-        result = process_frame_for_gesture(frame)
+        result = process_frame_for_gesture(frame) # Assuming process_frame_for_gesture is defined above
         
         if "error" not in result:
             # Cache the result for this stream
@@ -313,16 +426,20 @@ async def process_video_frame(request: Request):
         traceback.print_exc()
         return {"error": f"Failed to process frame: {e}"}
 
+
 @fastapi_app.get("/api/gestures")
 def get_available_gestures():
     """Return all available gesture classes the model can recognize"""
     return {"gestures": list(index_to_class.values())}
+
 
 @fastapi_app.get("/health")
 def health_check():
     """Simple health check endpoint"""
     return {"status": "healthy", "timestamp": time.time()}
 
+
+# Define the root endpoint AFTER other API endpoints but BEFORE Gradio mount
 @fastapi_app.get("/")
 async def root():
     return {
@@ -339,10 +456,47 @@ async def root():
         }
     }
 
+
+# --- Now define and mount the Gradio App ---
+
+gradio_app = gr.Blocks()
+
+with gradio_app:
+    gr.Markdown("# Hand Gesture Recognition")
+    with gr.Row():
+        input_image = gr.Image(type="pil", label="Upload Image")
+        output_json = gr.JSON(label="Prediction Results")
+    submit = gr.Button("Predict")
+    submit.click(
+        fn=predict, # Make sure 'predict' function is defined above
+        inputs=input_image,
+        outputs=output_json
+    )
+    gr.Examples(
+        examples=[["examples/two_up.jpg"], ["examples/call.jpg"], ["examples/stop.jpg"]],
+        inputs=input_image
+    )
+    
+    # Add information about API endpoints for Android integration
+    gr.Markdown("""
+    ## API Endpoints for Android Integration
+    
+    - **Image Upload**: `POST /api/predict` with image file
+    - **Video Frame**: `POST /api/video/frame` with frame data and X-Stream-ID header
+    - **WebSocket Stream**: Connect to `/api/stream` for real-time processing
+    - **Available Gestures**: `GET /api/gestures` returns all gesture classes
+    - **Health Check**: `GET /health` checks server status
+    """)
+
+
+# Mount Gradio app to FastAPI AFTER defining FastAPI endpoints
+app = gr.mount_gradio_app(fastapi_app, gradio_app, path="/")
+
+# --- Uvicorn runner remains the same ---
 if __name__ == "__main__":
     # Modified for Hugging Face Spaces environment
     uvicorn.run(
-        fastapi_app, 
+        app, # Use the final 'app' instance returned by mount_gradio_app
         host="0.0.0.0", 
         port=7860,
         root_path="",
