@@ -1,18 +1,4 @@
----
-title: Hand Gesture Detection Api
-emoji: 👀
-colorFrom: pink
-colorTo: indigo
-sdk: gradio
-sdk_version: 5.25.2
-app_file: app.py
-pinned: false
-short_description: hand_gesture_detection_api
----
-
-
-
-# Hand Gesture Recognition API
+# Gestura - Hand Gesture Detection Api
 
 A hand gesture recognition API built with FastAPI and Gradio, deployed on Hugging Face Spaces.
 
